@@ -1,16 +1,17 @@
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 
-pub type ReactiveId = u64;
+pub type ReactiveId = Arc<u64>;
+pub type WeakReactiveId = Weak<u64>;
 
 static ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Default)]
 pub struct Reactive<T> {
     inner: Arc<RwLock<ReactiveInner<T>>>,
-    id: u64,
+    id: ReactiveId,
 }
 
 unsafe impl<T: Send> Send for Reactive<T> {}
@@ -21,7 +22,7 @@ impl<T: Clone> Reactive<T> {
     pub fn new(value: T) -> Self {
         Self {
             inner: Arc::new(RwLock::new(ReactiveInner::new(value))),
-            id: ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+            id: Arc::new(ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)),
         }
     }
 
@@ -32,7 +33,7 @@ impl<T: Clone> Reactive<T> {
     }
 
     pub fn id(&self) -> ReactiveId {
-        self.id
+        self.id.clone()
     }
 }
 

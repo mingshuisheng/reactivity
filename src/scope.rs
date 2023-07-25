@@ -1,14 +1,16 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::AtomicU64;
-use crate::reactive::{Reactive, ReactiveId};
+use weak_table::WeakKeyHashMap;
+use crate::reactive::{Reactive, ReactiveId, WeakReactiveId};
 
 type DynFnType = Arc<dyn Fn() + Send + Sync>;
 
 static EFFECT_ID: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Clone)]
 struct Effect {
     f: DynFnType,
     id: u64,
@@ -41,15 +43,6 @@ impl Hash for Effect {
     }
 }
 
-impl Clone for Effect {
-    fn clone(&self) -> Self {
-        Self {
-            f: self.f.clone(),
-            id: self.id,
-        }
-    }
-}
-
 impl Debug for Effect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Effect")
@@ -63,7 +56,7 @@ static ID: AtomicU64 = AtomicU64::new(0);
 pub struct Scope {
     parent: Option<Arc<Scope>>,
     functions: Arc<RwLock<Vec<Effect>>>,
-    map: Arc<RwLock<HashMap<ReactiveId, HashSet<Effect>>>>,
+    map: Arc<RwLock<WeakKeyHashMap<WeakReactiveId, HashSet<Effect>>>>,
     id: u64,
 }
 
@@ -77,6 +70,9 @@ impl Debug for Scope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Scope")
             .field("id", &self.id)
+            .field("parent", &self.parent)
+            .field("functions", &self.functions.read().unwrap().len())
+            .field("map", &self.map.read().unwrap().len())
             .finish()
     }
 }
@@ -87,7 +83,7 @@ impl Scope {
             Self {
                 parent: None,
                 functions: Arc::new(RwLock::new(Vec::new())),
-                map: Arc::new(RwLock::new(HashMap::new())),
+                map: Arc::new(RwLock::new(WeakKeyHashMap::new())),
                 id: ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
             }
         )
@@ -98,7 +94,7 @@ impl Scope {
             Self {
                 parent: Some(self.clone()),
                 functions: Arc::new(RwLock::new(Vec::new())),
-                map: Arc::new(RwLock::new(HashMap::new())),
+                map: Arc::new(RwLock::new(WeakKeyHashMap::new())),
                 id: ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
             }
         )
@@ -117,7 +113,7 @@ impl Scope {
         let get_listen = move |_: &T| {
             if let Some(effect) = functions.read().unwrap().last() {
                 if !map.read().unwrap().contains_key(&id) {
-                    map.write().unwrap().insert(id, HashSet::new());
+                    map.write().unwrap().insert(id.clone(), HashSet::new());
                 }
                 map.write().unwrap().get_mut(&id).unwrap().insert(effect.clone());
             }
@@ -140,9 +136,8 @@ impl Scope {
     pub fn reactive<T: Clone + Send + Sync>(self: &mut Arc<Self>, value: T) -> Reactive<T> {
         let reactive_value = Reactive::new(value);
 
-        let reactive_id = reactive_value.id();
-        let get_listen = self.create_get_listen::<T>(reactive_id);
-        let set_listen = self.create_set_listen::<T>(reactive_id);
+        let get_listen = self.create_get_listen::<T>(reactive_value.id());
+        let set_listen = self.create_set_listen::<T>(reactive_value.id());
         reactive_value.add_observer(get_listen, set_listen);
 
         reactive_value
@@ -173,12 +168,19 @@ mod test {
         let r = scope.reactive(0);
         let r2 = r.clone();
         let r3 = scope.reactive(0);
+        dbg!(&scope);
         scope.effect(move || {
             println!("r2: {:?}", r2.value());
             let value = r2.value();
             r3.update(|_| value);
         });
-        r.update(|_| 2);
-        assert_eq!(r.value(), 2);
+        dbg!(&scope);
+        let r4 = r.clone();
+        scope.effect(move || {
+            println!("r4: {:?}", r4.value());
+        });
+        dbg!(&scope);
+        r.update(|count| count + 1);
+        assert_eq!(r.value(), 1);
     }
 }
